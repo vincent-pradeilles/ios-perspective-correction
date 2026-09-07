@@ -1,1 +1,77 @@
-# ios-perspective-correction
+# Card Straight
+
+A native iPhone app that photographs trading cards, uses a Photoroom foreground mask to remove the background and find the four edges, and produces a perspective-corrected transparent crop with automatic or user-selected proportions. Runs on iOS 17 or later.
+
+## Run
+
+1. Open `ios-perspective-correction.xcodeproj` in Xcode.
+2. Select the `ios-perspective-correction` scheme and an iPhone destination.
+3. For a physical iPhone, choose your development team in Signing & Capabilities and set a unique bundle identifier if needed.
+4. Build and run. Open the gear icon and enter your Photoroom API key (the same key used in the web demo). It is stored in the device Keychain.
+5. Tap **Take a photo**, allow camera access, and capture one flat card with all four corners visible.
+6. Review **Proportions**: calibrated captures default to Automatic. If a reliable estimate is unavailable, select Standard card or enter the actual width and height in the same units before saving. Rotate turns the corrected image clockwise without stretching it.
+
+**Choose from library** imports an existing image. **Try a sample card** includes the nine images from the original demo and works in Simulator, where a camera is unavailable. Sample scans also use Photoroom and require your API key. Compare Original/Corrected, save the corrected transparent PNG to Photos, or share it. A denied camera or Photos permission leaves the other import/export options available.
+
+## Reused demo logic
+
+Source: `/Users/vincent/Developer/presales_automation/src/lib/trading-card-perspective/perspective.ts`, used by `/trading-card-perspective?defaultImages=true`.
+
+`Processing/CardGeometry.swift` ports the original binary-mask detector to Swift:
+
+- Flood-fill background connected to the image border, excluding enclosed holes from the outer boundary.
+- Select the largest connected foreground component.
+- Compute a convex hull and simplify it to four significant vertices.
+- Assign boundary pixels to sides and perform two passes of robust least-squares line fitting, trimming rounded corners and outliers.
+- Intersect the fitted lines, order the corners, and apply the original confidence and component-fill checks. The apparent aspect-ratio acceptance range is widened to 1:1–5:1 to allow square and nonstandard cards/slabs.
+- Use the demo’s measured-area sizing. The 3.5 / 2.5 ratio is now an optional Standard card preset, not a mandatory output ratio.
+
+The native adaptations are explicit:
+
+- The app directly calls the same Photoroom `POST https://sdk.photoroom.com/v1/segment` endpoint as `api.ts`, with an `x-api-key` header and multipart `image_file` / `channels=alpha` fields. There is no Apple Vision segmentation or rectangle fallback.
+- The returned mask is read using the demo’s alpha-versus-luminance detection and thresholds. The full mask is also composited onto the original image as transparency before the perspective warp, removing background around rounded corners.
+- Core Image performs the projective warp locally on both color and alpha. The app exports a transparent card-only PNG; the web demo warps its original full canvas and can add a marketplace finish through additional Photoroom calls. Those finishing steps are outside this app’s correction flow.
+- Photos are uploaded directly to Photoroom for segmentation. Local image processing runs in a dedicated actor. Keys are user-provided, saved in Keychain, and are never bundled or logged.
+- EXIF orientation is normalized before upload and detection. Input is limited to 3,000 pixels on its longest edge, mask analysis to 1,600 pixels, and output to 2,400 pixels on its longest edge.
+- Cancellation cancels the request and prevents stale results. Missing/invalid keys, exhausted credits, rate limits, network failures, and invalid masks produce recoverable errors.
+
+API reference: [Photoroom Remove Background](https://docs.photoroom.com/api-reference-openapi).
+
+## Automatic proportions and capture
+
+The AVFoundation camera captures a frame from the rear physical wide-angle camera, together with that exact sample buffer’s `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix`. It prefers 4K, falls back to 1080p where needed, disables electronic stabilization/cropping and zoom, and enables geometric distortion correction where supported. This is a still image taken from the calibrated video stream, rather than a separate full-resolution photo capture with potentially different intrinsics. Preview shows the full frame. Camera capture is presented in portrait.
+
+`AVCaptureDevice.RotationCoordinator` supplies preview and capture orientation. Sensor pixels are left unrotated; the closest cardinal EXIF orientation accompanies the JPEG and the calibration. Image orientation and resizing are undone mathematically before projecting detected corners into calibrated camera coordinates. This avoids pairing a portrait/cropped image with a landscape/full-frame calibration matrix.
+
+For a flat rectangle, the first two columns of its unit-square-to-camera homography represent the two physical side vectors up to a common scale. The ratio of their lengths gives width/height. Estimates are rejected for invalid calibration, inconsistent right angles, implausible ratios, or excessive sensitivity to small corner changes. This estimates proportions, not physical dimensions in millimeters.
+
+There is no focal-length guess for library photos. When calibration is missing or rejected, the preview uses apparent proportions and export waits for an explicit Standard card or Custom choice. Custom accepts width and height in any matching units (ratios 1:5–5:1). Adjustments and rotation rerender locally from the retained cutout and never make another Photoroom request. All exports preserve PNG transparency.
+
+References: [Apple camera intrinsics](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliveryenabled), [rotation coordinator](https://developer.apple.com/documentation/avfoundation/avcapturedevice/rotationcoordinator), [rectangular structure geometry](https://lear.inrialpes.fr/people/triggs/events/iccv03/cdrom/hlk03/zhang.pdf).
+
+## Project structure
+
+- `ContentView.swift`: capture entry point, sample picker, processing and error states.
+- `CameraCapture.swift`: AVFoundation capture, per-frame intrinsics, orientation, and preview lifecycle.
+- `Processing/CameraCalibration.swift`: orientation/resize mapping and calibrated aspect-ratio estimation.
+- `CardProcessor.swift`: orientation normalization, mask compositing, Core Image correction.
+- `Processing/PhotoroomClient.swift`: direct multipart segmentation request and API error handling.
+- `APIKeySettings.swift`: secure key entry, replacement, and deletion through Keychain.
+- `Processing/CardGeometry.swift`: reusable mask geometry, independent of UIKit and Vision.
+- `CardResultView.swift`: original/corrected comparison, Photos saving, sharing.
+- `Samples/`: original demo fixtures.
+
+## Validation
+
+Run the geometry regression suite with `swift test`. It covers rounded corners, near-diagonal rotation, perspective, enclosed holes, disconnected noise, coordinate scaling, malformed masks, non-card rejection, the demo’s exact multipart request fields, API error mapping, known camera projections, nonstandard/square proportions, pixel noise, and all eight EXIF orientations after resizing.
+
+To test transparent PNG rendering, custom proportions, and rotation with synthetic alpha and grayscale masks without an API call:
+
+```sh
+swiftc -parse-as-library ios-perspective-correction/Processing/*.swift ios-perspective-correction/CardProcessor.swift Scripts/VerifyMaskRendering.swift -o /tmp/verify-card-mask
+/tmp/verify-card-mask
+```
+
+Debug Simulator launches with `--verify-proportions` use a synthetic calibrated card; add `--without-calibration` to verify the manual fallback. These fixtures make no API calls and do not read keys. Normal launches use the real camera/library/Photoroom flow.
+
+Simulator builds validate the native UI. Live sample correction requires a valid Photoroom key; real camera capture requires a physical iPhone. Best results come from a single fully visible card on a contrasting background without strong glare. The detector chooses the largest foreground component, including a graded slab if that is the segmented subject. Inspect the comparison before saving.
