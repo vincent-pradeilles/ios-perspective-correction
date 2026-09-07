@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreImage
 import ImageIO
+import Vision
 import simd
 import SwiftUI
 
@@ -30,6 +31,8 @@ final class CalibratedCameraController: UIViewController {
     private var camera: CalibratedCameraSession!
     private var preview: AVCaptureVideoPreviewLayer!
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private let autoButton = UIButton(type: .system)
+    private var automatic = true
     private var rotationObservation: NSKeyValueObservation?
     private let shutter = UIButton(type: .system)
     private let status = UILabel()
@@ -46,12 +49,13 @@ final class CalibratedCameraController: UIViewController {
             case .ready(let calibrated):
                 shutter.isEnabled = true
                 view.setNeedsLayout()
-                status.text = calibrated ? "Automatic proportions ready" : "Choose proportions after capture"
+                status.text = automatic ? "Show the whole card — auto captures a sharp frame" : (calibrated ? "Automatic proportions ready" : "Choose proportions after capture")
+            case .quality(let quality): status.text = quality.rawValue
             case .capturing:
-                shutter.isEnabled = false; status.text = "Capturing…"
+                shutter.isEnabled = false; autoButton.isEnabled = false; status.text = "Capturing…"
             case .photo(let photo): onCapture?(photo)
             case .failure(let message):
-                shutter.isEnabled = false; status.text = message
+                shutter.isEnabled = false; autoButton.isEnabled = false; status.text = message
             }
         }
         preview = AVCaptureVideoPreviewLayer(session: camera.session)
@@ -74,7 +78,19 @@ final class CalibratedCameraController: UIViewController {
         shutter.isEnabled = false
         shutter.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            camera.capture(rotationAngle: Double(rotationCoordinator?.videoRotationAngleForHorizonLevelCapture ?? 0))
+            camera.capture(rotationAngle: Double(preview.connection?.videoRotationAngle ?? 0))
+        }, for: .touchUpInside)
+        autoButton.setTitle("Auto: On", for: .normal)
+        autoButton.tintColor = .white
+        autoButton.accessibilityLabel = "Automatic capture"
+        autoButton.accessibilityValue = "On"
+        autoButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            automatic.toggle()
+            autoButton.setTitle(automatic ? "Auto: On" : "Auto: Off", for: .normal)
+            autoButton.accessibilityValue = automatic ? "On" : "Off"
+            camera.setAutomatic(automatic)
+            status.text = automatic ? "Show the whole card — auto captures a sharp frame" : "Tap the shutter when ready"
         }, for: .touchUpInside)
         status.text = "Starting camera…"
         status.font = .preferredFont(forTextStyle: .subheadline)
@@ -82,18 +98,21 @@ final class CalibratedCameraController: UIViewController {
         status.numberOfLines = 0
         status.textAlignment = .center
         let guidance = UILabel()
-        guidance.text = "Keep the card flat with all four corners visible"
+        guidance.text = "Keep the whole card visible. Auto chooses a sharp frame."
         guidance.font = .preferredFont(forTextStyle: .subheadline)
         guidance.textColor = .white
         guidance.textAlignment = .center
         guidance.numberOfLines = 0
-        for item in [cancel, shutter, status, guidance] {
+        for item in [cancel, autoButton, shutter, status, guidance] {
             item.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(item)
         }
         NSLayoutConstraint.activate([
             cancel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             cancel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            autoButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+            autoButton.centerYAnchor.constraint(equalTo: cancel.centerYAnchor),
+            autoButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             cancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             shutter.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             shutter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
@@ -112,7 +131,10 @@ final class CalibratedCameraController: UIViewController {
         preview.frame = view.bounds
         if let connection = preview.connection {
             let angle = rotationCoordinator?.videoRotationAngleForHorizonLevelPreview ?? 0
-            if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+                camera.updateRotation(Double(angle)) // Encode what the user sees in this portrait preview.
+            }
         }
     }
     override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); stop() }
@@ -122,15 +144,22 @@ final class CalibratedCameraController: UIViewController {
 /// AVFoundation is confined to one serial queue, including frame callbacks. The immutable
 /// session reference is exposed only to AVCaptureVideoPreviewLayer on the UI thread.
 private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    enum Event: Sendable { case ready(Bool), capturing, photo(CapturedPhoto), failure(String) }
+    enum Event: Sendable { case ready(Bool), quality(AutoCaptureGate.Status), capturing, photo(CapturedPhoto), failure(String) }
     let session = AVCaptureSession()
     let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
     private let queue = DispatchQueue(label: "CardStraight.camera", qos: .userInitiated)
     private let onEvent: @MainActor @Sendable (Event) -> Void
     private let context = CIContext()
+    private var automatic = true
+    private var completed = false
+    private var stopped = false
+    private var gate = AutoCaptureGate()
+    private var lastAnalysis = -Double.infinity
+    private var lastQuality: AutoCaptureGate.Status?
     private var configured = false
     private var pendingCapture = false
     private var captureOrientation = 1
+    private var rotationReady = false
     private var reportedCalibration: Bool?
     private var observers = [NSObjectProtocol]()
 
@@ -140,6 +169,7 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
         queue.async { [self] in
             do {
                 if !configured { try configure(); configured = true }
+                stopped = false
                 session.startRunning()
                 if !session.isRunning { report(.failure("Camera couldn’t start. Close it and try again.")) }
             } catch { report(.failure("Camera unavailable. Close it and choose a photo from your library.")) }
@@ -147,7 +177,9 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
     }
     func stop() {
         queue.async { [self] in
+            stopped = true
             pendingCapture = false
+            gate.reset()
             if session.isRunning { session.stopRunning() }
             observers.forEach(NotificationCenter.default.removeObserver)
             observers.removeAll()
@@ -155,11 +187,12 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
     }
     func capture(rotationAngle: Double) {
         queue.async { [self] in
-            guard session.isRunning, !pendingCapture else { return }
+            guard session.isRunning, !pendingCapture, !completed, !stopped else { return }
             // Keep sensor pixels untouched and carry a cardinal EXIF orientation alongside K.
             // Small horizon roll is handled by the quadrilateral warp, without cropping the frame.
             let turns = (Int((rotationAngle / 90).rounded()) % 4 + 4) % 4
             captureOrientation = [1, 6, 3, 8][turns]
+            rotationReady = true
             pendingCapture = true
             report(.capturing)
             queue.asyncAfter(deadline: .now() + 4) { [weak self] in
@@ -169,6 +202,57 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
             }
         }
     }
+    func updateRotation(_ angle: Double) {
+        queue.async { [self] in
+            guard !pendingCapture, !completed else { return }
+            let orientation = [1, 6, 3, 8][(Int((angle / 90).rounded()) % 4 + 4) % 4]
+            if captureOrientation != orientation { gate.reset() }
+            captureOrientation = orientation
+            rotationReady = true
+        }
+    }
+    func setAutomatic(_ enabled: Bool) {
+        queue.async { [self] in
+            automatic = enabled; gate.reset(); lastQuality = nil
+        }
+    }
+
+    private func automaticStatus(_ buffer: CVPixelBuffer, time: Double) -> AutoCaptureGate.Status {
+        let request = VNDetectRectanglesRequest()
+        request.minimumConfidence = 0.55
+        request.minimumAspectRatio = 0.2
+        request.maximumAspectRatio = 1
+        request.minimumSize = 0.15
+        request.maximumObservations = 4
+        request.quadratureTolerance = 35
+        do {
+            try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
+            let observations = (request.results ?? []).filter {
+                let b = $0.boundingBox
+                return b.minX > 0.015 && b.minY > 0.015 && b.maxX < 0.985 && b.maxY < 0.985 &&
+                    b.width * b.height >= 0.07 && abs(b.midX - 0.5) < 0.35 && abs(b.midY - 0.5) < 0.35
+            }
+            guard let card = observations.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }) else {
+                return gate.assess(time: time, corners: nil, sharpness: 0, brightness: 0, adjusting: false)
+            }
+            let corners = [card.topLeft, card.topRight, card.bottomRight, card.bottomLeft].map { CardPoint(x: $0.x, y: $0.y) }
+            let image = CIImage(cvPixelBuffer: buffer)
+            let b = card.boundingBox
+            // Analyze the interior, excluding the sharp outline and surrounding table.
+            let crop = CGRect(x: b.minX * image.extent.width, y: b.minY * image.extent.height,
+                              width: b.width * image.extent.width, height: b.height * image.extent.height)
+                .insetBy(dx: b.width * image.extent.width * 0.18, dy: b.height * image.extent.height * 0.18)
+            let patch = image.cropped(to: crop).transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+                .transformed(by: CGAffineTransform(scaleX: 256 / crop.width, y: 256 / crop.height))
+            var pixels = [UInt8](repeating: 0, count: 256 * 256)
+            context.render(patch, toBitmap: &pixels, rowBytes: 256, bounds: CGRect(x: 0, y: 0, width: 256, height: 256),
+                           format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
+            let detail = FrameDetail.measure(pixels, width: 256, height: 256)
+            return gate.assess(time: time, corners: corners, sharpness: detail.sharpness,
+                               brightness: detail.brightness, adjusting: device?.isAdjustingFocus == true)
+        } catch { return gate.assess(time: time, corners: nil, sharpness: 0, brightness: 0, adjusting: false) }
+    }
+
     private func configure() throws {
         guard let device else { throw CardError.invalidImage }
         session.beginConfiguration()
@@ -205,6 +289,8 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
         for name in [AVCaptureSession.wasInterruptedNotification, AVCaptureSession.runtimeErrorNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
                 self?.queue.async { [weak self] in
+                    self?.stopped = true
+                    self?.gate.reset()
                     self?.pendingCapture = false
                     self?.reportedCalibration = nil
                     self?.report(.failure("Camera interrupted. Close it and try again."))
@@ -213,7 +299,16 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
         }
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard !stopped, !completed, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        if automatic, rotationReady, !pendingCapture {
+            let time = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+            if time - lastAnalysis >= 0.18 {
+                lastAnalysis = time
+                let quality = automaticStatus(buffer, time: time)
+                if quality != lastQuality { lastQuality = quality; report(.quality(quality)) }
+                if quality == .capture { pendingCapture = true; report(.capturing) }
+            }
+        }
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
         var calibration: CameraCalibration?
         if let data = CMGetAttachment(sampleBuffer, key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix, attachmentModeOut: nil) as? Data,
@@ -230,6 +325,7 @@ private final class CalibratedCameraSession: NSObject, AVCaptureVideoDataOutputS
         }
         guard pendingCapture else { return }
         pendingCapture = false
+        completed = true // Both shutter and auto capture freeze this exact frame, once.
         let image = CIImage(cvPixelBuffer: buffer)
         guard let cgImage = context.createCGImage(image, from: image.extent) else { report(.failure("Couldn’t capture this frame. Try again.")); return }
         let data = NSMutableData()

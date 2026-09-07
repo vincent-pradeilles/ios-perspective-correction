@@ -1,6 +1,7 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import ImageIO
+import Vision
 
 
 struct CardResult: Sendable {
@@ -34,7 +35,8 @@ actor CardProcessor {
         let upload = try encode(original, type: "public.jpeg", properties: [kCGImageDestinationLossyCompressionQuality: 0.98])
         let maskData = try await photoroom.segmentationMask(image: upload, apiKey: apiKey)
         try Task.checkCancellation()
-        return try finish(original: original, image: image, maskData: maskData, calibration: calibration)
+        let result = try finish(original: original, image: image, maskData: maskData, calibration: calibration)
+        return try orientContent(result)
     }
 
     // Kept separate from the HTTP request so mask alignment and transparency can be regression-tested.
@@ -84,6 +86,59 @@ actor CardProcessor {
         let png = try encode(corrected, type: "public.png")
         return CardResult(original: original, corrected: corrected, detection: detection, pngData: png,
                           cutout: cutout, automaticRatio: estimate, aspectRatio: ratio, quarterTurns: 0)
+    }
+
+    // A quadrilateral has no semantic top. Text can disambiguate a sideways/upside-down card
+    // without forcing portrait proportions or making another Photoroom request.
+    func uprightQuarterTurns(_ image: CGImage) throws -> Int {
+        let scale = min(1, 1200 / Double(max(image.width, image.height)))
+        let reduced = CIImage(cgImage: image).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let sample = context.createCGImage(reduced, from: reduced.extent) else { return 0 }
+        var scores = [Double](repeating: 0, count: 4)
+        for turn in 0..<4 {
+            try Task.checkCancellation()
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.automaticallyDetectsLanguage = true
+            let supported = (try? request.supportedRecognitionLanguages()) ?? []
+            request.recognitionLanguages = ["en-US", "ja-JP", "fr-FR", "de-DE", "es-ES", "it-IT"].filter { supported.contains($0) }
+            do {
+                try VNImageRequestHandler(cgImage: sample, orientation: [.up, .right, .down, .left][turn]).perform([request])
+                scores[turn] = (request.results ?? []).reduce(0) { sum, observation in
+                    guard let text = observation.topCandidates(1).first, text.confidence >= 0.65 else { return sum }
+                    let count = text.string.filter { $0.isLetter || $0.isNumber }.count
+                    guard count >= 3 else { return sum }
+                    // Vision can read sideways text too. Score only baselines that read
+                    // left-to-right in this candidate orientation, not recognition alone.
+                    guard let box = try? text.boundingBox(for: text.string.startIndex..<text.string.endIndex) else { return sum }
+                    let dx = box.topRight.x - box.topLeft.x, dy = box.topRight.y - box.topLeft.y
+                    guard dx > 0, abs(dy) < dx * 0.25 else { return sum }
+                    return sum + Double(min(count, 40)) * Double(text.confidence)
+                }
+            } catch { return 0 } // Unreadable/unsupported text must never make correction fail.
+        }
+        let ranked = scores.indices.sorted { scores[$0] > scores[$1] }
+        let best = ranked[0], runnerUp = scores[ranked[1]]
+        guard scores[best] >= 12, scores[best] >= runnerUp * 1.3 + 3 else { return 0 }
+        return best
+    }
+
+    func orientContent(_ result: CardResult) throws -> CardResult {
+        let turns = try uprightQuarterTurns(result.corrected)
+        guard turns != 0 else { return result }
+        let rotated = CIImage(cgImage: result.corrected).oriented([.up, .right, .down, .left][turns])
+        guard let image = context.createCGImage(rotated, from: rotated.extent) else { throw CardError.exportFailed }
+        let corners = (0..<4).map { result.detection.corners[($0 - turns + 4) % 4] }
+        let estimate = result.automaticRatio.map {
+            AspectRatioEstimate(widthOverHeight: turns % 2 == 0 ? $0.widthOverHeight : 1 / $0.widthOverHeight,
+                                relativeUncertainty: $0.relativeUncertainty)
+        }
+        return CardResult(original: result.original, corrected: image,
+                          detection: CardDetection(corners: corners, confidence: result.detection.confidence),
+                          pngData: try encode(image, type: "public.png"), cutout: result.cutout,
+                          automaticRatio: estimate, aspectRatio: turns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio,
+                          quarterTurns: 0)
     }
 
     /// Proportion changes reuse the mask and pixels; they never incur another API request.

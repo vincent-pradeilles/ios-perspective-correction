@@ -48,6 +48,7 @@ struct ContentView: View {
             }
             .task {
 #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--verify-camera-ui") { cameraPresented = true; return }
                 if ProcessInfo.processInfo.arguments.contains("--verify-proportions") {
                     do { result = try await ProportionPreviewFixture.make(calibrated: !ProcessInfo.processInfo.arguments.contains("--without-calibration")) }
                     catch { errorMessage = error.localizedDescription }
