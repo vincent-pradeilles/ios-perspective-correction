@@ -11,6 +11,8 @@ A native iPhone app that photographs trading cards, uses a Photoroom foreground 
 5. Tap **Take a photo**, allow camera access, and capture one flat card with all four corners visible.
 6. Review **Proportions**: calibrated captures default to Automatic. If a reliable estimate is unavailable, select Standard card or enter the actual width and height in the same units before saving. Rotate turns the corrected image clockwise without stretching it.
 
+7. Under **Finish**, keep **Transparent** for PNG, or choose **Background blur** and tap **Apply background blur** for the demo’s Photoroom finish. Preview, save, or share the resulting JPEG. Applying the finish uses two image-edit API calls. Changing proportions or rotation requires applying the finish again; switching between existing transparent and blurred results makes no API calls.
+
 **Choose from library** imports an existing image. **Try a sample card** includes the nine images from the original demo and works in Simulator, where a camera is unavailable. Sample scans also use Photoroom and require your API key. Compare Original/Corrected, save the corrected transparent PNG to Photos, or share it. A denied camera or Photos permission leaves the other import/export options available.
 
 ## Reused demo logic
@@ -30,7 +32,8 @@ The native adaptations are explicit:
 
 - The app directly calls the same Photoroom `POST https://sdk.photoroom.com/v1/segment` endpoint as `api.ts`, with an `x-api-key` header and multipart `image_file` / `channels=alpha` fields. There is no Apple Vision segmentation or rectangle fallback.
 - The returned mask is read using the demo’s alpha-versus-luminance detection and thresholds. The full mask is also composited onto the original image as transparency before the perspective warp, removing background around rounded corners.
-- Core Image performs the projective warp locally on both color and alpha. The app exports a transparent card-only PNG; the web demo warps its original full canvas and can add a marketplace finish through additional Photoroom calls. Those finishing steps are outside this app’s correction flow.
+- Core Image performs the projective warp locally on both color and alpha. The default export is a transparent card-only PNG. The optional Background blur finish ports the demo’s full-canvas homography warp, retaining the surrounding photo and transparent warp borders. It applies the selected proportions and rotation before upload. Framing matches the demo: preserve the full input canvas, keep the card at the arithmetic mean of the four detected corners, preserve measured area, and shrink only to fit canvas width/height minus two pixels. No additional padding, margin, recentering, or output-size parameters are sent for this finish. The selected card ratio intentionally replaces the demo’s fixed ratio.
+- Background blur reuses `api.ts`’s Mercari finish: two `POST https://image-api.photoroom.com/v2/edit` calls. First: `expand.mode=ai.auto`, `referenceBox=originalImage`, `removeBackground=false`. Then upload that expanded image with `background.blur.mode=gaussian`, `background.blur.radius=0.012`, `lighting.mode=ai.preserve-hue-and-saturation`, `removeBackground=false`, `referenceBox=originalImage`, and `export.format=jpeg`. The app previews and exports the returned JPEG.
 - Photos are uploaded directly to Photoroom for segmentation. Local image processing runs in a dedicated actor. Keys are user-provided, saved in Keychain, and are never bundled or logged.
 - EXIF orientation is normalized before upload and detection. Input is limited to 3,000 pixels on its longest edge, mask analysis to 1,600 pixels, and output to 2,400 pixels on its longest edge.
 - Cancellation cancels the request and prevents stale results. Missing/invalid keys, exhausted credits, rate limits, network failures, and invalid masks produce recoverable errors.
@@ -45,7 +48,7 @@ The AVFoundation camera captures a frame from the rear physical wide-angle camer
 
 For a flat rectangle, the first two columns of its unit-square-to-camera homography represent the two physical side vectors up to a common scale. The ratio of their lengths gives width/height. Estimates are rejected for invalid calibration, inconsistent right angles, implausible ratios, or excessive sensitivity to small corner changes. This estimates proportions, not physical dimensions in millimeters.
 
-There is no focal-length guess for library photos. When calibration is missing or rejected, the preview uses apparent proportions and export waits for an explicit Standard card or Custom choice. Custom accepts width and height in any matching units (ratios 1:5–5:1). Adjustments and rotation rerender locally from the retained cutout and never make another Photoroom request. All exports preserve PNG transparency.
+There is no focal-length guess for library photos. When calibration is missing or rejected, the preview uses apparent proportions and export waits for an explicit Standard card or Custom choice. Custom accepts width and height in any matching units (ratios 1:5–5:1). Adjustments and rotation rerender locally from the retained cutout and never make another Photoroom request. Transparent exports preserve PNG transparency; the optional blurred finish exports JPEG.
 
 References: [Apple camera intrinsics](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliveryenabled), [rotation coordinator](https://developer.apple.com/documentation/avfoundation/avcapturedevice/rotationcoordinator), [rectangular structure geometry](https://lear.inrialpes.fr/people/triggs/events/iccv03/cdrom/hlk03/zhang.pdf).
 
@@ -55,7 +58,7 @@ References: [Apple camera intrinsics](https://developer.apple.com/documentation/
 - `CameraCapture.swift`: AVFoundation capture, per-frame intrinsics, orientation, and preview lifecycle.
 - `Processing/CameraCalibration.swift`: orientation/resize mapping and calibrated aspect-ratio estimation.
 - `CardProcessor.swift`: orientation normalization, mask compositing, Core Image correction.
-- `Processing/PhotoroomClient.swift`: direct multipart segmentation request and API error handling.
+- `Processing/PhotoroomClient.swift`: direct multipart segmentation and two-stage blur requests, with API error handling.
 - `APIKeySettings.swift`: secure key entry, replacement, and deletion through Keychain.
 - `Processing/CardGeometry.swift`: reusable mask geometry, independent of UIKit and Vision.
 - `CardResultView.swift`: original/corrected comparison, Photos saving, sharing.
@@ -63,9 +66,9 @@ References: [Apple camera intrinsics](https://developer.apple.com/documentation/
 
 ## Validation
 
-Run the geometry regression suite with `swift test`. It covers rounded corners, near-diagonal rotation, perspective, enclosed holes, disconnected noise, coordinate scaling, malformed masks, non-card rejection, the demo’s exact multipart request fields, API error mapping, known camera projections, nonstandard/square proportions, pixel noise, and all eight EXIF orientations after resizing.
+Run the geometry regression suite with `swift test`. Blur framing includes golden destination coordinates evaluated directly from the supplied demo’s `correctPerspective` code, covering off-center portrait/landscape cards and both fit limits. It covers rounded corners, near-diagonal rotation, perspective, enclosed holes, disconnected noise, coordinate scaling, malformed masks, non-card rejection, the demo’s exact segmentation/finish multipart request fields, a mocked two-call finish verifying the expanded image is passed to the blur call, API error mapping, known camera projections, nonstandard/square proportions, pixel noise, and all eight EXIF orientations after resizing.
 
-To test transparent PNG rendering, custom proportions, and rotation with synthetic alpha and grayscale masks without an API call:
+To test transparent PNG rendering, custom proportions, rotation, and the full-scene warp’s retained background and orientation with synthetic alpha and grayscale masks without an API call:
 
 ```sh
 swiftc -parse-as-library ios-perspective-correction/Processing/*.swift ios-perspective-correction/CardProcessor.swift Scripts/VerifyMaskRendering.swift -o /tmp/verify-card-mask

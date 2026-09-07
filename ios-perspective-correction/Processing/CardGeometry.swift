@@ -27,6 +27,22 @@ enum CardError: LocalizedError {
 
 enum CardGeometry {
     static let standardAspectRatio = 3.5 / 2.5
+    /// Demo full-canvas framing: measured area, two-pixel fit allowance, and mean corner position.
+    /// The selected ratio replaces only the demo's fixed 3.5 / 2.5 proportions.
+    static func sceneDestination(corners p: [CardPoint], width: Double, height: Double, aspectRatio: Double) throws -> [CardPoint] {
+        guard p.count == 4, width > 2, height > 2, aspectRatio.isFinite, (0.2...5).contains(aspectRatio) else {
+            throw CardError.exportFailed
+        }
+        let area = max(p[0].distance(to: p[1]), p[2].distance(to: p[3])) *
+                   max(p[0].distance(to: p[3]), p[1].distance(to: p[2]))
+        var w = sqrt(area * aspectRatio), h = sqrt(area / aspectRatio)
+        let fit = min(1, (width - 2) / w, (height - 2) / h)
+        w *= fit; h *= fit
+        let cx = p.map(\.x).reduce(0, +) / 4, cy = p.map(\.y).reduce(0, +) / 4
+        return [CardPoint(x: cx - w / 2, y: cy - h / 2), CardPoint(x: cx + w / 2, y: cy - h / 2),
+                CardPoint(x: cx + w / 2, y: cy + h / 2), CardPoint(x: cx - w / 2, y: cy + h / 2)]
+    }
+
     private struct Line {
         let a: Double, b: Double, c: Double
         func distance(_ p: CardPoint) -> Double { abs(a * p.x + b * p.y + c) }

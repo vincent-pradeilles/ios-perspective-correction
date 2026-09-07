@@ -14,6 +14,8 @@ struct CardResult: Sendable {
     let quarterTurns: Int
 }
 
+struct FinishedCard: Sendable { let image: CGImage; let data: Data }
+
 // Serial actor keeps image decoding, mask traversal, and rendering off the UI actor.
 actor CardProcessor {
     private let context = CIContext()
@@ -95,6 +97,74 @@ actor CardProcessor {
         let png = try encode(corrected, type: "public.png")
         return CardResult(original: result.original, corrected: corrected, detection: result.detection, pngData: png,
                           cutout: result.cutout, automaticRatio: result.automaticRatio, aspectRatio: aspectRatio, quarterTurns: turns)
+    }
+
+    func blurredFinish(_ result: CardResult, apiKey: String) async throws -> FinishedCard {
+        let scene = try sceneImage(result)
+        let data = try await photoroom.blurredFinish(image: encode(scene, type: "public.png"), apiKey: apiKey)
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw PhotoroomError.invalidResponse }
+        return FinishedCard(image: image, data: data)
+    }
+
+    // The demo warps the whole photograph, leaving transparent borders for AI Expand.
+    // Keep that background context for blur, while the default export remains the masked cutout.
+    func sceneImage(_ result: CardResult) throws -> CGImage {
+        let width = result.original.width, height = result.original.height
+        let p = result.detection.corners
+        let ratio = result.quarterTurns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio
+        let destination = try CardGeometry.sceneDestination(corners: p, width: Double(width), height: Double(height), aspectRatio: ratio)
+        var rows: [[Double]] = []
+        for (a, b) in zip(destination, p) {
+            rows.append([a.x, a.y, 1, 0, 0, 0, -b.x * a.x, -b.x * a.y, b.x])
+            rows.append([0, 0, 0, a.x, a.y, 1, -b.y * a.x, -b.y * a.y, b.y])
+        }
+        for column in 0..<8 {
+            let pivot = (column..<8).max { abs(rows[$0][column]) < abs(rows[$1][column]) }!
+            guard abs(rows[pivot][column]) > 1e-10 else { throw CardError.exportFailed }
+            rows.swapAt(column, pivot)
+            let divisor = rows[column][column]
+            for k in column...8 { rows[column][k] /= divisor }
+            for row in 0..<8 where row != column {
+                let factor = rows[row][column]
+                for k in column...8 { rows[row][k] -= factor * rows[column][k] }
+            }
+        }
+        let m = rows.map { $0[8] }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        try pixels.withUnsafeMutableBytes { bytes in
+            guard let bitmap = CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                        bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw CardError.exportFailed }
+            // Raw bitmap rows already match the detector’s top-left coordinates.
+            // A UIKit-style Y flip here would invert pixels without moving the corners.
+            bitmap.draw(result.original, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        var output = [UInt8](repeating: 0, count: pixels.count)
+        for y in 0..<height {
+            if y % 64 == 0 { try Task.checkCancellation() }
+            for x in 0..<width {
+                let denominator = m[6] * Double(x) + m[7] * Double(y) + 1
+                let sx = (m[0] * Double(x) + m[1] * Double(y) + m[2]) / denominator
+                let sy = (m[3] * Double(x) + m[4] * Double(y) + m[5]) / denominator
+                guard sx.isFinite, sy.isFinite, sx >= 0, sy >= 0, sx < Double(width - 1), sy < Double(height - 1) else { continue }
+                let left = Int(sx), top = Int(sy), dx = sx - Double(Int(sx)), dy = sy - Double(Int(sy))
+                for c in 0..<4 {
+                    let a = Double(pixels[(top * width + left) * 4 + c]) * (1 - dx) + Double(pixels[(top * width + left + 1) * 4 + c]) * dx
+                    let b = Double(pixels[((top + 1) * width + left) * 4 + c]) * (1 - dx) + Double(pixels[((top + 1) * width + left + 1) * 4 + c]) * dx
+                    output[(y * width + x) * 4 + c] = UInt8(clamping: Int((a * (1 - dy) + b * dy).rounded()))
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(output) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { throw CardError.exportFailed }
+        let rotated = CIImage(cgImage: image).oriented([.up, .right, .down, .left][result.quarterTurns])
+        guard let scene = context.createCGImage(rotated, from: rotated.extent) else { throw CardError.exportFailed }
+        return scene
     }
 
     private func encode(_ image: CGImage, type: String, properties: [CFString: Any] = [:]) throws -> Data {

@@ -7,6 +7,7 @@ private enum ProportionMode: String { case automatic, standard, custom }
 
 struct CardResultView: View {
     let result: CardResult
+    let apiKey: String
     let onNewPhoto: () -> Void
     @State private var showingOriginal = false
     @State private var saving = false
@@ -18,6 +19,15 @@ struct CardResultView: View {
     @State private var rendered: CardResult?
     @State private var rendering = false
     @State private var quarterTurns = 0
+    @State private var blurSelected = false
+    @State private var finished: FinishedCard?
+    @State private var finishedRequest: RenderRequest?
+    @State private var finishJob: UUID?
+    @State private var finishing = false
+    private var activeFinish: FinishedCard? { finishedRequest == renderRequest ? finished : nil }
+    private var exportImage: CGImage { blurSelected ? (activeFinish?.image ?? displayed.corrected) : displayed.corrected }
+    private var exportData: Data { blurSelected ? (activeFinish?.data ?? displayed.pngData) : displayed.pngData }
+    private var canSave: Bool { canExport && !finishing && (!blurSelected || activeFinish != nil) }
     private let processor = CardProcessor()
 
     private var displayed: CardResult { rendered ?? result }
@@ -53,16 +63,16 @@ struct CardResultView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
-                ResultHeading()
+                ResultHeading(blurred: blurSelected && activeFinish != nil)
                 Picker("Image comparison", selection: $showingOriginal) {
                     Text("Corrected").tag(false)
                     Text("Original").tag(true)
                 }.pickerStyle(.segmented)
-                Image(decorative: showingOriginal ? result.original : displayed.corrected, scale: 1)
+                Image(decorative: showingOriginal ? result.original : exportImage, scale: 1)
                     .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 320)
                     .padding(20)
                     .background(.background, in: RoundedRectangle(cornerRadius: 24))
-                    .overlay { if rendering { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
+                    .overlay { if rendering || finishing { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
                     .accessibilityLabel(showingOriginal ? "Original card photo" : "Straightened card")
                 HStack {
                     Spacer()
@@ -74,32 +84,51 @@ struct CardResultView: View {
                             customHeight = previousWidth
                         }
                     } label: { Label("Rotate", systemImage: "rotate.right") }
-                    .buttonStyle(.bordered).disabled(rendering || saving)
+                    .buttonStyle(.bordered).disabled(rendering || saving || finishing)
                     .accessibilityLabel("Rotate clockwise")
                 }
-                ProportionControls(estimate: estimatedRatio, mode: $mode, width: $customWidth, height: $customHeight)
+                ProportionControls(estimate: estimatedRatio, mode: $mode, width: $customWidth, height: $customHeight).disabled(finishing || saving)
+                finishControls
                 HStack {
                     if canExport {
                         Label("\(displayed.aspectRatio, specifier: "%.3f") : 1", systemImage: "aspectratio")
                     } else { Text("Preview • choose proportions to export") }
                     Spacer()
-                    Text("\(displayed.corrected.width) × \(displayed.corrected.height) px")
+                    Text("\(exportImage.width) × \(exportImage.height) px")
                 }.font(.caption).foregroundStyle(.secondary)
                 VStack(spacing: 12) {
                     Button(action: save) {
                         Label(saving ? "Saving…" : saved ? "Saved to Photos" : "Save to Photos",
                               systemImage: saved ? "checkmark" : "square.and.arrow.down")
                             .frame(maxWidth: .infinity).padding(.vertical, 8)
-                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || saved || !canExport)
-                    ShareLink(item: CardPNG(data: displayed.pngData),
-                              preview: SharePreview("Straightened trading card", image: Image(decorative: displayed.corrected, scale: 1))) {
+                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || saved || !canSave)
+                    ShareLink(item: CardExport(data: exportData, jpeg: blurSelected),
+                              preview: SharePreview("Straightened trading card", image: Image(decorative: exportImage, scale: 1))) {
                         Label("Share corrected card", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity).padding(.vertical, 5)
-                    }.buttonStyle(.bordered).controlSize(.large).disabled(!canExport)
+                    }.buttonStyle(.bordered).controlSize(.large).disabled(!canSave || saving)
                     Button("Scan another card", action: onNewPhoto).padding(.top, 4)
                 }
             }.padding(24)
         }
         .task { if result.automaticRatio == nil { mode = .custom } }
+        .onChange(of: blurSelected) { saved = false }
+        .task(id: finishJob) {
+            guard finishJob != nil else { return }
+            let request = renderRequest
+            finishing = true
+            saved = false
+            do {
+                let output = try await processor.blurredFinish(displayed, apiKey: apiKey)
+                try Task.checkCancellation()
+                finished = output
+                finishedRequest = request
+                finishing = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                finishing = false
+                message = error.localizedDescription
+            }
+        }
         .task(id: renderRequest) {
             saved = false
             rendering = false
@@ -124,10 +153,37 @@ struct CardResultView: View {
         } message: { Text(message ?? "") }
     }
 
+    private var finishControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Finish").font(.headline)
+            Picker("Finish", selection: $blurSelected) {
+                Text("Transparent").tag(false)
+                Text("Background blur").tag(true)
+            }.pickerStyle(.segmented).disabled(finishing || saving)
+            if blurSelected {
+                Text("Keep the photo’s surroundings with a soft blur and balanced lighting.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                if finishing {
+                    Label("Expanding and blurring background…", systemImage: "sparkles").font(.subheadline)
+                    Button("Cancel") { finishJob = nil; finishing = false }
+                } else if activeFinish == nil {
+                    Button("Apply background blur") { showingOriginal = false; finishing = true; finishJob = UUID() }
+                        .buttonStyle(.borderedProminent).disabled(!canExport || saving)
+                    Text("Uses your Photoroom API key. Two image edits per finish.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Save a PNG with the background removed.").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background, in: RoundedRectangle(cornerRadius: 18))
+    }
+
     private func save() {
-        guard canExport else { return }
-        let data = displayed.pngData
-        let savedRatio = displayed.aspectRatio
+        guard canSave else { return }
+        let data = exportData
+        let savedRequest = renderRequest
+        let savedBlur = blurSelected
         saving = true
         Task { @MainActor in
             defer { saving = false }
@@ -141,18 +197,19 @@ struct CardResultView: View {
                     let request = PHAssetCreationRequest.forAsset()
                     request.addResource(with: .photo, data: data, options: nil)
                 }
-                saved = desiredRatio == savedRatio
+                saved = renderRequest == savedRequest && blurSelected == savedBlur
             } catch { message = error.localizedDescription }
         }
     }
 }
 
 private struct ResultHeading: View {
+    let blurred: Bool
     var body: some View {
         VStack(spacing: 8) {
             Label("Perspective corrected", systemImage: "checkmark.circle.fill")
                 .font(.title2.bold()).foregroundStyle(Color.accentColor)
-            Text("Straight edges. Background removed.").foregroundStyle(.secondary)
+            Text(blurred ? "Straight edges. Soft background." : "Straight edges. Background removed.").foregroundStyle(.secondary)
         }
     }
 }
@@ -199,9 +256,11 @@ private struct ProportionControls: View {
     }
 }
 
-private struct CardPNG: Transferable {
+private struct CardExport: Transferable {
     let data: Data
+    let jpeg: Bool
     static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .png) { $0.data }
+        DataRepresentation(exportedContentType: .jpeg) { $0.data }.exportingCondition { $0.jpeg }
+        DataRepresentation(exportedContentType: .png) { $0.data }.exportingCondition { !$0.jpeg }
     }
 }

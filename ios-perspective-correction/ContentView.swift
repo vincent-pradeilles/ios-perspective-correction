@@ -22,7 +22,7 @@ struct ContentView: View {
             ZStack {
                 Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
                 if let result {
-                    CardResultView(result: result) { self.result = nil; input = nil }
+                    CardResultView(result: result, apiKey: apiKey) { self.result = nil; input = nil }
                 } else if input != nil {
                     ProcessingView { input = nil }
                 } else {

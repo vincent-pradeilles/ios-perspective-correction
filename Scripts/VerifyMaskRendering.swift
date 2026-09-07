@@ -8,6 +8,51 @@ import ImageIO
         let processor = CardProcessor()
         let width = 200, height = 220
         let space = CGColorSpaceCreateDeviceRGB()
+        for angle in [-0.3, 0.3] {
+            var photo = [UInt8](repeating: 255, count: width * height * 4)
+            var mask = photo
+            for y in 0..<height {
+                for x in 0..<width {
+                    let dx = Double(x - width / 2), dy = Double(y - height / 2)
+                    let u = dx * cos(angle) + dy * sin(angle), v = -dx * sin(angle) + dy * cos(angle)
+                    let inside = abs(u) < 45 && abs(v) < 75
+                    let i = (y * width + x) * 4
+                    photo[i] = inside ? 255 : 0; photo[i + 1] = 0; photo[i + 2] = inside ? 0 : 255
+                    if inside && u < -15 && v < -35 { photo[i] = 0; photo[i + 1] = 255 }
+                    for c in 0..<3 { mask[i + c] = inside ? 255 : 0 }
+                }
+            }
+            func makeImage(_ bytes: [UInt8]) -> CGImage {
+                CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                        space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                        provider: CGDataProvider(data: Data(bytes) as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+            }
+            let maskData = NSMutableData()
+            let destination = CGImageDestinationCreateWithData(maskData, "public.png" as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, makeImage(mask), nil)
+            precondition(CGImageDestinationFinalize(destination))
+            let original = makeImage(photo)
+            let result = try await processor.finish(original: original, image: CIImage(cgImage: original), maskData: maskData as Data)
+            let scene = try await processor.sceneImage(result)
+            var pixels = [UInt8](repeating: 0, count: photo.count)
+            CIContext().render(CIImage(cgImage: scene), toBitmap: &pixels, rowBytes: width * 4,
+                               bounds: CGRect(x: 0, y: 0, width: width, height: height), format: .RGBA8, colorSpace: space)
+            var lefts: [Int] = [], rights: [Int] = []
+            for y in stride(from: 60, through: 160, by: 10) {
+                let foreground = (0..<width).filter { x in
+                    let i = (y * width + x) * 4
+                    return pixels[i] > 200 || pixels[i + 1] > 200
+                }
+                precondition(!foreground.isEmpty)
+                lefts.append(foreground.first!); rights.append(foreground.last!)
+            }
+            precondition(lefts.max()! - lefts.min()! <= 2 && rights.max()! - rights.min()! <= 2,
+                         "Tilted card must become straight in the blur input, angle \(angle): \(lefts), \(rights)")
+            let green = (0..<(width * height)).filter { pixels[$0 * 4 + 1] > 200 }
+            precondition(!green.isEmpty && green.allSatisfy { $0 / width < height / 2 && $0 % width < width / 2 },
+                         "Blur input must preserve the card's top-left orientation marker")
+            print("PASS: tilted card \(angle) becomes straight and upright in full-scene blur input")
+        }
         for alphaMask in [false, true] {
             var sourcePixels = [UInt8](repeating: 255, count: width * height * 4)
             var maskPixels = sourcePixels
@@ -68,6 +113,21 @@ import ImageIO
             let before = greenCenter(result.corrected), after = greenCenter(rotated.corrected)
             precondition(abs(after.x - (Double(result.corrected.height - 1) - before.y)) < 2 && abs(after.y - before.x) < 2,
                          "Rotate must turn pixels clockwise, not just swap dimensions")
+            let scene = try await processor.sceneImage(result)
+            let rotatedScene = try await processor.sceneImage(rotated)
+            precondition(scene.width == width && scene.height == height, "Blur input must retain the original photo canvas")
+            precondition(rotatedScene.width == height && rotatedScene.height == width, "Blur scene rotation must match the card")
+            let sceneMarker = greenCenter(scene), originalMarker = greenCenter(original), rotatedMarker = greenCenter(rotatedScene)
+            precondition(abs(sceneMarker.x - originalMarker.x) < 3 && abs(sceneMarker.y - originalMarker.y) < 3,
+                         "Full-scene warp must preserve marker orientation for a frontal card: \(sceneMarker), \(originalMarker)")
+            precondition(abs(rotatedMarker.x - (Double(height - 1) - sceneMarker.y)) < 2 && abs(rotatedMarker.y - sceneMarker.x) < 2,
+                         "Blur scene must rotate clockwise")
+            var sceneBytes = [UInt8](repeating: 0, count: width * height * 4)
+            CIContext().render(CIImage(cgImage: scene), toBitmap: &sceneBytes, rowBytes: width * 4,
+                               bounds: CGRect(x: 0, y: 0, width: width, height: height), format: .RGBA8, colorSpace: space)
+            let background = (10 * width + 10) * 4
+            precondition(sceneBytes[background + 2] > 250 && sceneBytes[background + 3] > 250,
+                         "Blur input must keep the original blue background")
             let restored = try await processor.render(result, aspectRatio: result.aspectRatio, quarterTurns: 4)
             precondition(restored.corrected.width == result.corrected.width && restored.corrected.height == result.corrected.height,
                          "Four turns must restore original dimensions")
