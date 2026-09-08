@@ -10,6 +10,7 @@ struct CardResultView: View {
     let apiKey: String
     let onNewPhoto: () -> Void
     @State private var showingOriginal = false
+    @State private var comparison: CardComparison?
     @State private var saving = false
     @State private var saved = false
     @State private var message: String?
@@ -65,15 +66,25 @@ struct CardResultView: View {
             VStack(spacing: 22) {
                 ResultHeading(blurred: blurSelected && activeFinish != nil)
                 Picker("Image comparison", selection: $showingOriginal) {
-                    Text("Corrected").tag(false)
+                    Text("Edited").tag(false)
                     Text("Original").tag(true)
                 }.pickerStyle(.segmented)
-                Image(decorative: showingOriginal ? result.original : exportImage, scale: 1)
-                    .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 320)
-                    .padding(20)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 24))
-                    .overlay { if rendering || finishing { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
-                    .accessibilityLabel(showingOriginal ? "Original card photo" : "Straightened card")
+                Button {
+                    comparison = CardComparison(original: result.original, edited: exportImage, showingOriginal: showingOriginal)
+                } label: {
+                    Image(decorative: showingOriginal ? result.original : exportImage, scale: 1)
+                        .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 320)
+                        .padding(20)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 24))
+                        .overlay { if rendering || finishing { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .padding(12).background(.regularMaterial, in: Circle()).padding(12)
+                        }
+                }.buttonStyle(.plain)
+                    .disabled(rendering || finishing)
+                    .accessibilityLabel("View photos full screen")
+                    .accessibilityHint("Compare original and edited photos, with pinch to zoom")
                 HStack {
                     Spacer()
                     Button {
@@ -109,6 +120,9 @@ struct CardResultView: View {
                     Button("Scan another card", action: onNewPhoto).padding(.top, 4)
                 }
             }.padding(24)
+        }
+        .fullScreenCover(item: $comparison) { snapshot in
+            CardComparisonView(comparison: snapshot, showingOriginal: snapshot.showingOriginal)
         }
         .task { if result.automaticRatio == nil { mode = .custom } }
         .onChange(of: blurSelected) { saved = false }
