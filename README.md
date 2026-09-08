@@ -13,7 +13,7 @@ A native iPhone app that photographs trading cards, uses a Photoroom foreground 
 
 7. Under **Finish**, keep **Transparent** for PNG, or choose **Background blur** and tap **Apply background blur** for the demo’s Photoroom finish. Preview, save, or share the resulting JPEG. Applying the finish uses two image-edit API calls. Changing proportions or rotation requires applying the finish again; switching between existing transparent and blurred results makes no API calls.
 
-**Choose from library** imports an existing image. **Try a sample card** includes the nine images from the original demo and works in Simulator, where a camera is unavailable. Sample scans also use Photoroom and require your API key. Compare Original/Corrected, save the corrected transparent PNG to Photos, or share it. A denied camera or Photos permission leaves the other import/export options available.
+**Choose from library** imports an existing image. **Try a sample card** includes the nine images from the original demo and works in Simulator, where a camera is unavailable. Sample scans also use Photoroom and require your API key. Compare Original/Corrected, save both the original and corrected image to Photos, or share the corrected image. **Save before & after** preserves the original camera/import file and saves the selected finish (transparent PNG or blurred JPEG) in the same Photos change transaction. A denied camera or Photos permission leaves the other import/export options available.
 
 ## Reused demo logic
 

@@ -98,7 +98,7 @@ struct CardResultView: View {
                 }.font(.caption).foregroundStyle(.secondary)
                 VStack(spacing: 12) {
                     Button(action: save) {
-                        Label(saving ? "Saving…" : saved ? "Saved to Photos" : "Save to Photos",
+                        Label(saving ? "Saving…" : saved ? "Both saved to Photos" : "Save before & after",
                               systemImage: saved ? "checkmark" : "square.and.arrow.down")
                             .frame(maxWidth: .infinity).padding(.vertical, 8)
                     }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || saved || !canSave)
@@ -193,9 +193,13 @@ struct CardResultView: View {
                 return
             }
             do {
+                let originalData = try await processor.originalPhotoData(result)
                 try await PHPhotoLibrary.shared().performChanges {
-                    let request = PHAssetCreationRequest.forAsset()
-                    request.addResource(with: .photo, data: data, options: nil)
+                    // One Photos change transaction for the original and selected finish.
+                    let before = PHAssetCreationRequest.forAsset()
+                    before.addResource(with: .photo, data: originalData, options: nil)
+                    let after = PHAssetCreationRequest.forAsset()
+                    after.addResource(with: .photo, data: data, options: nil)
                 }
                 saved = renderRequest == savedRequest && blurSelected == savedBlur
             } catch { message = error.localizedDescription }

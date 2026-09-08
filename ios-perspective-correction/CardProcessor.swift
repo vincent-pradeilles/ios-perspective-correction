@@ -13,6 +13,7 @@ struct CardResult: Sendable {
     let automaticRatio: AspectRatioEstimate?
     let aspectRatio: Double
     let quarterTurns: Int
+    var originalData: Data? = nil
 }
 
 struct FinishedCard: Sendable { let image: CGImage; let data: Data }
@@ -35,7 +36,8 @@ actor CardProcessor {
         let upload = try encode(original, type: "public.jpeg", properties: [kCGImageDestinationLossyCompressionQuality: 0.98])
         let maskData = try await photoroom.segmentationMask(image: upload, apiKey: apiKey)
         try Task.checkCancellation()
-        let result = try finish(original: original, image: image, maskData: maskData, calibration: calibration)
+        var result = try finish(original: original, image: image, maskData: maskData, calibration: calibration)
+        result.originalData = data
         return try orientContent(result)
     }
 
@@ -138,7 +140,7 @@ actor CardProcessor {
                           detection: CardDetection(corners: corners, confidence: result.detection.confidence),
                           pngData: try encode(image, type: "public.png"), cutout: result.cutout,
                           automaticRatio: estimate, aspectRatio: turns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio,
-                          quarterTurns: 0)
+                          quarterTurns: 0, originalData: result.originalData)
     }
 
     /// Proportion changes reuse the mask and pixels; they never incur another API request.
@@ -151,7 +153,7 @@ actor CardProcessor {
         guard let corrected = context.createCGImage(rotated, from: rotated.extent) else { throw CardError.exportFailed }
         let png = try encode(corrected, type: "public.png")
         return CardResult(original: result.original, corrected: corrected, detection: result.detection, pngData: png,
-                          cutout: result.cutout, automaticRatio: result.automaticRatio, aspectRatio: aspectRatio, quarterTurns: turns)
+                          cutout: result.cutout, automaticRatio: result.automaticRatio, aspectRatio: aspectRatio, quarterTurns: turns, originalData: result.originalData)
     }
 
     func blurredFinish(_ result: CardResult, apiKey: String) async throws -> FinishedCard {
@@ -220,6 +222,13 @@ actor CardProcessor {
         let rotated = CIImage(cgImage: image).oriented([.up, .right, .down, .left][result.quarterTurns])
         guard let scene = context.createCGImage(rotated, from: rotated.extent) else { throw CardError.exportFailed }
         return scene
+    }
+
+    func originalPhotoData(_ result: CardResult) throws -> Data {
+        // Preserve the camera/import bytes, including their original resolution and EXIF.
+        // Offline fixtures have only decoded pixels.
+        if let data = result.originalData { return data }
+        return try encode(result.original, type: "public.png")
     }
 
     private func encode(_ image: CGImage, type: String, properties: [CFString: Any] = [:]) throws -> Data {
