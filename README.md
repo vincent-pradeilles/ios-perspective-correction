@@ -4,25 +4,36 @@ A native iPhone app that photographs trading cards, uses a Photoroom foreground 
 
 ## Before and after
 
-Three bundled sample cards, with **Edited first** and **Original second**, matching the app’s comparison order. These saved examples come from an earlier perspective-correction build using standard-card proportions; they do not demonstrate the current mask cleanup or optional background blur and relighting. Originals below show the full source photo; the current app crops Original to the item’s bounds with padding.
+Three bundled sample cards processed with the app’s current code: Photoroom mask, perspective correction, and optional background blur with relighting. **Original is on the left**, followed by **Edited · transparent** and **Edited · background blur**. Original and blurred images use the app’s mask-based crop with 5% padding; transparent images retain their alpha channel and tight framing.
+
+These library samples have no camera calibration, so the examples use the **Standard card** proportion preset (2.5 : 3.5).
 
 ### Charizard
 
-| Edited · after | Original · before |
-| :---: | :---: |
-| <img src="docs/examples/charizard-edited.png" alt="Charizard card after perspective correction, upright with straight edges" width="300"> | <img src="ios-perspective-correction/Samples/trading-card-sample-01.jpg" alt="Original Charizard card photographed at an angle on a brown surface" width="300"> |
+| Original · before | Edited · transparent | Edited · background blur |
+| :---: | :---: | :---: |
+| <img src="docs/examples/charizard-original.jpg" alt="Charizard original photo cropped to the item with padding" width="240"> | <img src="docs/examples/charizard-edited.png" alt="Charizard with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/charizard-blurred.jpg" alt="Charizard with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### Mew
 
-| Edited · after | Original · before |
-| :---: | :---: |
-| <img src="docs/examples/mew-edited.png" alt="Japanese Mew card after perspective correction and tight cropping" width="300"> | <img src="ios-perspective-correction/Samples/trading-card-sample-02.jpg" alt="Original Japanese Mew card on a dark textured surface" width="300"> |
+| Original · before | Edited · transparent | Edited · background blur |
+| :---: | :---: | :---: |
+| <img src="docs/examples/mew-original.jpg" alt="Mew original photo cropped to the item with padding" width="240"> | <img src="docs/examples/mew-edited.png" alt="Mew with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/mew-blurred.jpg" alt="Mew with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### The Rock
 
-| Edited · after | Original · before |
-| :---: | :---: |
-| <img src="docs/examples/the-rock-edited.png" alt="The Rock trading card and protective holder after perspective correction" width="300"> | <img src="ios-perspective-correction/Samples/trading-card-sample-03.jpg" alt="Original angled photo of The Rock trading card in a protective holder" width="300"> |
+| Original · before | Edited · transparent | Edited · background blur |
+| :---: | :---: | :---: |
+| <img src="docs/examples/the-rock-original.jpg" alt="The Rock original photo cropped to the item with padding" width="240"> | <img src="docs/examples/the-rock-edited.png" alt="The Rock with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/the-rock-blurred.jpg" alt="The Rock with perspective corrected, blurred background, and relighting" width="240"> |
+
+Regenerate these assets from the repository root with `PHOTOROOM_API_KEY` set in your environment:
+
+```sh
+swiftc -parse-as-library ios-perspective-correction/Processing/*.swift ios-perspective-correction/CardProcessor.swift Scripts/GenerateReadmeExamples.swift -o /tmp/generate-card-examples
+/tmp/generate-card-examples
+```
+
+This runs the app’s processing code on macOS and makes nine Photoroom API calls: one segmentation and two finish requests per sample. The script does not store the API key.
 
 ## Run
 
