@@ -12,19 +12,19 @@ These library samples have no camera calibration, so the examples use the **Stan
 
 | Original · before | Edited · transparent | Edited · background blur |
 | :---: | :---: | :---: |
-| <img src="docs/examples/charizard-original.jpg" alt="Charizard original photo cropped to the item with padding" width="240"> | <img src="docs/examples/charizard-edited.png" alt="Charizard with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/charizard-blurred.jpg" alt="Charizard with perspective corrected, blurred background, and relighting" width="240"> |
+| <img src="docs/examples/charizard-original.jpg" alt="Charizard original photo cropped to the item with padding" width="240"> | <img src="docs/examples/charizard-transparent.png" alt="Charizard with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/charizard-blurred.jpg" alt="Charizard with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### Mew
 
 | Original · before | Edited · transparent | Edited · background blur |
 | :---: | :---: | :---: |
-| <img src="docs/examples/mew-original.jpg" alt="Mew original photo cropped to the item with padding" width="240"> | <img src="docs/examples/mew-edited.png" alt="Mew with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/mew-blurred.jpg" alt="Mew with perspective corrected, blurred background, and relighting" width="240"> |
+| <img src="docs/examples/mew-original.jpg" alt="Mew original photo cropped to the item with padding" width="240"> | <img src="docs/examples/mew-transparent.png" alt="Mew with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/mew-blurred.jpg" alt="Mew with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### The Rock
 
 | Original · before | Edited · transparent | Edited · background blur |
 | :---: | :---: | :---: |
-| <img src="docs/examples/the-rock-original.jpg" alt="The Rock original photo cropped to the item with padding" width="240"> | <img src="docs/examples/the-rock-edited.png" alt="The Rock with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/the-rock-blurred.jpg" alt="The Rock with perspective corrected, blurred background, and relighting" width="240"> |
+| <img src="docs/examples/the-rock-original.jpg" alt="The Rock original photo cropped to the item with padding" width="240"> | <img src="docs/examples/the-rock-transparent.png" alt="The Rock with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/the-rock-blurred.jpg" alt="The Rock with perspective corrected, blurred background, and relighting" width="240"> |
 
 Regenerate these assets from the repository root with `PHOTOROOM_API_KEY` set in your environment:
 

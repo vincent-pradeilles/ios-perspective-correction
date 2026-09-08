@@ -17,7 +17,7 @@ import Foundation
             let detected = try await processor.process(Data(contentsOf: root.appendingPathComponent(sample)), apiKey: key)
             // Library samples have no synchronized camera calibration: select the app's Standard card preset.
             let result = try await processor.render(detected, aspectRatio: 2.5 / 3.5)
-            try result.pngData.write(to: output.appendingPathComponent("\(name)-edited.png"), options: .atomic)
+            try result.pngData.write(to: output.appendingPathComponent("\(name)-transparent.png"), options: .atomic)
             try await processor.originalPhotoData(result).write(to: output.appendingPathComponent("\(name)-original.jpg"), options: .atomic)
             let blurred = try await processor.blurredFinish(result, apiKey: key)
             try blurred.data.write(to: output.appendingPathComponent("\(name)-blurred.jpg"), options: .atomic)
