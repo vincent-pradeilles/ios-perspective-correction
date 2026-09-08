@@ -4,25 +4,25 @@ A native iPhone app that photographs trading cards, uses a Photoroom foreground 
 
 ## Before and after
 
-Three bundled sample cards processed with the app’s current code: Photoroom mask, perspective correction, and optional background blur with relighting. **Original is on the left**, followed by **Edited · transparent** and **Edited · background blur**. Original and blurred images use the app’s mask-based crop with 5% padding; transparent images retain their alpha channel and tight framing.
+Three bundled sample cards processed with the app’s current code: Photoroom mask, perspective correction, and optional background blur with relighting. **Original is on the left**, followed by **Edited · transparent** and **Edited · background blur + relight**. Original and blurred images use the app’s mask-based crop with 5% padding; transparent images retain their alpha channel and tight framing.
 
 These library samples have no camera calibration, so the examples use the **Standard card** proportion preset (2.5 : 3.5).
 
 ### Charizard
 
-| Original · before | Edited · transparent | Edited · background blur |
+| Original · before | Edited · transparent | Edited · background blur + relight |
 | :---: | :---: | :---: |
 | <img src="docs/examples/charizard-original.jpg" alt="Charizard original photo cropped to the item with padding" width="240"> | <img src="docs/examples/charizard-transparent.png" alt="Charizard with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/charizard-blurred.jpg" alt="Charizard with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### Mew
 
-| Original · before | Edited · transparent | Edited · background blur |
+| Original · before | Edited · transparent | Edited · background blur + relight |
 | :---: | :---: | :---: |
 | <img src="docs/examples/mew-original.jpg" alt="Mew original photo cropped to the item with padding" width="240"> | <img src="docs/examples/mew-transparent.png" alt="Mew with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/mew-blurred.jpg" alt="Mew with perspective corrected, blurred background, and relighting" width="240"> |
 
 ### The Rock
 
-| Original · before | Edited · transparent | Edited · background blur |
+| Original · before | Edited · transparent | Edited · background blur + relight |
 | :---: | :---: | :---: |
 | <img src="docs/examples/the-rock-original.jpg" alt="The Rock original photo cropped to the item with padding" width="240"> | <img src="docs/examples/the-rock-transparent.png" alt="The Rock with perspective corrected and background removed using the Photoroom mask" width="240"> | <img src="docs/examples/the-rock-blurred.jpg" alt="The Rock with perspective corrected, blurred background, and relighting" width="240"> |
 
