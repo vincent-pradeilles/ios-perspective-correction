@@ -37,20 +37,37 @@ enum APIKeyStore {
 
 struct APIKeySettings: View {
     @Environment(\.dismiss) private var dismiss
-    let currentKey: String
+    @Binding var currentKey: String
     let onSave: (String) -> Void
+    @AppStorage(CapturePreferences.automaticShutterKey) private var automaticShutter = true
     @State private var key = ""
     @State private var errorMessage: String?
+    @State private var loadedKey = false
+
+    init(currentKey: Binding<String>, onSave: @escaping (String) -> Void) {
+        _currentKey = currentKey
+        self.onSave = onSave
+        _key = State(initialValue: currentKey.wrappedValue)
+    }
+
+    private var trimmedKey: String { key.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var hasUnsavedChanges: Bool { trimmedKey != currentKey }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
+                    Toggle("Automatic shutter", isOn: $automaticShutter)
+                        .accessibilityIdentifier("automaticShutterSetting")
+                } header: { Text("Camera") } footer: {
+                    Text("Capture automatically when the card is sharp. Turn off to use the shutter button. This preference saves immediately and is shared with the camera’s Auto toggle.")
+                }
+                Section {
                     SecureField("Photoroom API key", text: $key)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("photoroomAPIKey")
                 } header: { Text("Photoroom") } footer: {
-                    Text("Use the same API key as the web demo. Your key is stored in this iPhone’s Keychain and sent only to Photoroom.")
+                    Text("Tap Done to save your key securely in this iPhone’s Keychain. It stays saved when you close the app and is sent only to Photoroom. Use Remove saved key to delete it.")
                 }
                 Section {
                     Label("Photos are sent to Photoroom", systemImage: "cloud")
@@ -62,15 +79,23 @@ struct APIKeySettings: View {
                     Section { Button("Remove saved key", role: .destructive) { persist("") } }
                 }
             }
-            .navigationTitle("API settings").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { persist(key.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                        .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Done") {
+                        if hasUnsavedChanges { persist(trimmedKey) }
+                        else { dismiss() }
+                    }
+                    .disabled(hasUnsavedChanges && trimmedKey.isEmpty)
                 }
             }
-            .task { key = currentKey }
+            .interactiveDismissDisabled(hasUnsavedChanges)
+            .onAppear {
+                // Read the live binding after presentation, not the sheet's earlier snapshot.
+                guard !loadedKey else { return }
+                key = currentKey
+                loadedKey = true
+            }
             .alert("Couldn’t save key", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
                 Button("OK") { errorMessage = nil }
             } message: { Text(errorMessage ?? "") }

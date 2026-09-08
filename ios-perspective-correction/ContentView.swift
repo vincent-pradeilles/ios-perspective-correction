@@ -34,11 +34,11 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { settingsPresented = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("API settings")
+                        .accessibilityLabel("Settings")
                 }
             }
             .sheet(isPresented: $settingsPresented, onDismiss: { pendingPhoto = nil }) {
-                APIKeySettings(currentKey: apiKey) { key in
+                APIKeySettings(currentKey: $apiKey) { key in
                     apiKey = key
                     if let pendingPhoto, !key.isEmpty {
                         self.pendingPhoto = nil

@@ -32,10 +32,11 @@ final class CalibratedCameraController: UIViewController {
     private var preview: AVCaptureVideoPreviewLayer!
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private let autoButton = UIButton(type: .system)
-    private var automatic = true
+    private var automatic = CapturePreferences.automaticShutter
     private var rotationObservation: NSKeyValueObservation?
     private let shutter = UIButton(type: .system)
     private let status = UILabel()
+    private let guidance = UILabel()
     private var active = true
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .portrait }
@@ -58,6 +59,7 @@ final class CalibratedCameraController: UIViewController {
                 shutter.isEnabled = false; autoButton.isEnabled = false; status.text = message
             }
         }
+        camera.setAutomatic(automatic)
         preview = AVCaptureVideoPreviewLayer(session: camera.session)
         preview.videoGravity = .resizeAspect // Show the entire captured frame, with no preview crop.
         view.layer.addSublayer(preview)
@@ -80,13 +82,15 @@ final class CalibratedCameraController: UIViewController {
             guard let self else { return }
             camera.capture(rotationAngle: Double(preview.connection?.videoRotationAngle ?? 0))
         }, for: .touchUpInside)
-        autoButton.setTitle("Auto: On", for: .normal)
+        autoButton.setTitle(automatic ? "Auto: On" : "Auto: Off", for: .normal)
         autoButton.tintColor = .white
         autoButton.accessibilityLabel = "Automatic capture"
-        autoButton.accessibilityValue = "On"
+        autoButton.accessibilityValue = automatic ? "On" : "Off"
         autoButton.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             automatic.toggle()
+            CapturePreferences.automaticShutter = automatic
+            updateGuidance()
             autoButton.setTitle(automatic ? "Auto: On" : "Auto: Off", for: .normal)
             autoButton.accessibilityValue = automatic ? "On" : "Off"
             camera.setAutomatic(automatic)
@@ -97,8 +101,7 @@ final class CalibratedCameraController: UIViewController {
         status.textColor = .white
         status.numberOfLines = 0
         status.textAlignment = .center
-        let guidance = UILabel()
-        guidance.text = "Keep the whole card visible. Auto chooses a sharp frame."
+        updateGuidance()
         guidance.font = .preferredFont(forTextStyle: .subheadline)
         guidance.textColor = .white
         guidance.textAlignment = .center
@@ -126,6 +129,10 @@ final class CalibratedCameraController: UIViewController {
         ])
         camera.start()
     }
+    private func updateGuidance() {
+        guidance.text = automatic ? "Keep the whole card visible. Auto chooses a sharp frame." : "Keep the whole card visible, then tap the shutter."
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         preview.frame = view.bounds

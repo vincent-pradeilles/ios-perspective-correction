@@ -70,9 +70,9 @@ struct CardResultView: View {
                     Text("Original").tag(true)
                 }.pickerStyle(.segmented)
                 Button {
-                    comparison = CardComparison(original: result.original, edited: exportImage, showingOriginal: showingOriginal)
+                    comparison = CardComparison(original: result.originalPreview, edited: exportImage, showingOriginal: showingOriginal)
                 } label: {
-                    Image(decorative: showingOriginal ? result.original : exportImage, scale: 1)
+                    Image(decorative: showingOriginal ? result.originalPreview : exportImage, scale: 1)
                         .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 320)
                         .padding(20)
                         .background(.background, in: RoundedRectangle(cornerRadius: 24))

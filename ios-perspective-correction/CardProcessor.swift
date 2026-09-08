@@ -14,6 +14,8 @@ struct CardResult: Sendable {
     let aspectRatio: Double
     let quarterTurns: Int
     var originalData: Data? = nil
+    var framedOriginal: CGImage? = nil
+    var originalPreview: CGImage { framedOriginal ?? original }
 }
 
 struct FinishedCard: Sendable { let image: CGImage; let data: Data }
@@ -86,8 +88,11 @@ actor CardProcessor {
         let ratio = estimate?.widthOverHeight ?? previewRatio
         let corrected = try rectify(cutout, detection: detection, aspectRatio: ratio)
         let png = try encode(corrected, type: "public.png")
+        let crop = CardGeometry.paddedItemCrop(bounds: detection.maskBounds ?? CardGeometry.bounds(of: detection.corners),
+                                               canvas: CGSize(width: original.width, height: original.height))
+        guard let framed = original.cropping(to: crop) else { throw CardError.exportFailed }
         return CardResult(original: original, corrected: corrected, detection: detection, pngData: png,
-                          cutout: cutout, automaticRatio: estimate, aspectRatio: ratio, quarterTurns: 0)
+                          cutout: cutout, automaticRatio: estimate, aspectRatio: ratio, quarterTurns: 0, framedOriginal: framed)
     }
 
     // A quadrilateral has no semantic top. Text can disambiguate a sideways/upside-down card
@@ -137,10 +142,10 @@ actor CardProcessor {
                                 relativeUncertainty: $0.relativeUncertainty)
         }
         return CardResult(original: result.original, corrected: image,
-                          detection: CardDetection(corners: corners, confidence: result.detection.confidence),
+                          detection: CardDetection(corners: corners, confidence: result.detection.confidence, maskBounds: result.detection.maskBounds),
                           pngData: try encode(image, type: "public.png"), cutout: result.cutout,
                           automaticRatio: estimate, aspectRatio: turns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio,
-                          quarterTurns: 0, originalData: result.originalData)
+                          quarterTurns: 0, originalData: result.originalData, framedOriginal: result.framedOriginal)
     }
 
     /// Proportion changes reuse the mask and pixels; they never incur another API request.
@@ -153,7 +158,7 @@ actor CardProcessor {
         guard let corrected = context.createCGImage(rotated, from: rotated.extent) else { throw CardError.exportFailed }
         let png = try encode(corrected, type: "public.png")
         return CardResult(original: result.original, corrected: corrected, detection: result.detection, pngData: png,
-                          cutout: result.cutout, automaticRatio: result.automaticRatio, aspectRatio: aspectRatio, quarterTurns: turns, originalData: result.originalData)
+                          cutout: result.cutout, automaticRatio: result.automaticRatio, aspectRatio: aspectRatio, quarterTurns: turns, originalData: result.originalData, framedOriginal: result.framedOriginal)
     }
 
     func blurredFinish(_ result: CardResult, apiKey: String) async throws -> FinishedCard {
@@ -162,7 +167,30 @@ actor CardProcessor {
         try Task.checkCancellation()
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw PhotoroomError.invalidResponse }
-        return FinishedCard(image: image, data: data)
+        return try cropBlurredImage(image, result: result)
+    }
+
+    func cropBlurredImage(_ image: CGImage, result: CardResult) throws -> FinishedCard {
+        // The full scene is still expanded/blurred exactly as before. Map the mask-derived
+        // rectified item into the returned originalImage canvas, then crop the final JPEG.
+        let w = Double(result.original.width), h = Double(result.original.height)
+        let turns = result.quarterTurns
+        let ratio = turns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio
+        let points = try CardGeometry.sceneDestination(corners: result.detection.corners, width: w, height: h, aspectRatio: ratio)
+        let rotated = points.map { p -> CardPoint in
+            switch turns {
+            case 1: return CardPoint(x: h - p.y, y: p.x)
+            case 2: return CardPoint(x: w - p.x, y: h - p.y)
+            case 3: return CardPoint(x: p.y, y: w - p.x)
+            default: return p
+            }
+        }
+        let canvasWidth = turns % 2 == 0 ? w : h, canvasHeight = turns % 2 == 0 ? h : w
+        let scaled = rotated.map { CardPoint(x: $0.x * Double(image.width) / canvasWidth,
+                                             y: $0.y * Double(image.height) / canvasHeight) }
+        let crop = CardGeometry.paddedItemCrop(bounds: CardGeometry.bounds(of: scaled), canvas: CGSize(width: image.width, height: image.height))
+        guard let cropped = image.cropping(to: crop) else { throw CardError.exportFailed }
+        return FinishedCard(image: cropped, data: try encode(cropped, type: "public.jpeg", properties: [kCGImageDestinationLossyCompressionQuality: 0.98]))
     }
 
     // The demo warps the whole photograph, leaving transparent borders for AI Expand.
@@ -225,10 +253,24 @@ actor CardProcessor {
     }
 
     func originalPhotoData(_ result: CardResult) throws -> Data {
-        // Preserve the camera/import bytes, including their original resolution and EXIF.
-        // Offline fixtures have only decoded pixels.
-        if let data = result.originalData { return data }
-        return try encode(result.original, type: "public.png")
+        // Crop the original at its native resolution when source bytes are available.
+        if let data = result.originalData, let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? Int,
+           let height = properties[kCGImagePropertyPixelHeight] as? Int,
+           let original = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(width, height)
+           ] as CFDictionary) {
+            let bounds = result.detection.maskBounds ?? CardGeometry.bounds(of: result.detection.corners)
+            let scaled = bounds.applying(CGAffineTransform(scaleX: Double(original.width) / Double(result.original.width),
+                                                          y: Double(original.height) / Double(result.original.height)))
+            let crop = CardGeometry.paddedItemCrop(bounds: scaled, canvas: CGSize(width: original.width, height: original.height))
+            guard let image = original.cropping(to: crop) else { throw CardError.exportFailed }
+            return try encode(image, type: "public.jpeg", properties: [kCGImageDestinationLossyCompressionQuality: 0.98])
+        }
+        return try encode(result.originalPreview, type: "public.png")
     }
 
     private func encode(_ image: CGImage, type: String, properties: [CFString: Any] = [:]) throws -> Data {

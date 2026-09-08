@@ -82,6 +82,36 @@ import ImageIO
             precondition(CGImageDestinationFinalize(destination))
             let original = image(sourcePixels)
             let result = try await processor.finish(original: original, image: CIImage(cgImage: original), maskData: maskData as Data)
+            precondition(result.originalPreview.width < original.width && result.originalPreview.height < original.height,
+                         "Original preview must be cropped to the padded mask bounds")
+            let savedBefore = try await processor.originalPhotoData(result)
+            let savedSource = CGImageSourceCreateWithData(savedBefore as CFData, nil)!
+            let savedImage = CGImageSourceCreateImageAtIndex(savedSource, 0, nil)!
+            precondition(savedImage.width == result.originalPreview.width && savedImage.height == result.originalPreview.height)
+            let doubled = CIImage(cgImage: original).transformed(by: CGAffineTransform(scaleX: 2, y: 2))
+            let fullResolution = CIContext().createCGImage(doubled, from: doubled.extent)!
+            let sourceData = NSMutableData()
+            let sourceDestination = CGImageDestinationCreateWithData(sourceData, "public.png" as CFString, 1, nil)!
+            CGImageDestinationAddImage(sourceDestination, fullResolution, nil)
+            precondition(CGImageDestinationFinalize(sourceDestination))
+            var nativeResult = result
+            nativeResult.originalData = sourceData as Data
+            let nativeSaved = try await processor.originalPhotoData(nativeResult)
+            let nativeSource = CGImageSourceCreateWithData(nativeSaved as CFData, nil)!
+            let nativeImage = CGImageSourceCreateImageAtIndex(nativeSource, 0, nil)!
+            precondition(abs(nativeImage.width - result.originalPreview.width * 2) <= 2 &&
+                         abs(nativeImage.height - result.originalPreview.height * 2) <= 2,
+                         "Saving the cropped original must retain native resolution")
+            for turns in 0..<4 {
+                let r = try await processor.render(result, aspectRatio: turns % 2 == 0 ? result.aspectRatio : 1 / result.aspectRatio, quarterTurns: turns)
+                let fullScene = try await processor.sceneImage(r)
+                let cropped = try await processor.cropBlurredImage(fullScene, result: r)
+                precondition(cropped.image.width < fullScene.width && cropped.image.height < fullScene.height)
+                let expectedWidth = turns % 2 == 0 ? 126 : 170
+                let expectedHeight = turns % 2 == 0 ? 170 : 126
+                precondition(abs(cropped.image.width - expectedWidth) <= 3 && abs(cropped.image.height - expectedHeight) <= 3,
+                             "Padded blur crop must follow rotation, got \(cropped.image.width)x\(cropped.image.height)")
+            }
             let decoded = CGImageSourceCreateWithData(result.pngData as CFData, nil)!
             let png = CGImageSourceCreateImageAtIndex(decoded, 0, nil)!
             let w = png.width, h = png.height

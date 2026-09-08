@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 // Swift port of presales_automation/src/lib/trading-card-perspective/perspective.ts.
 // Coordinates are pixels, with the origin at the top left.
@@ -11,6 +12,7 @@ struct CardPoint: Equatable, Sendable {
 struct CardDetection: Sendable {
     let corners: [CardPoint] // top left, top right, bottom right, bottom left
     let confidence: Double
+    var maskBounds: CGRect? = nil
 }
 
 enum CardError: LocalizedError {
@@ -41,6 +43,18 @@ enum CardGeometry {
         let cx = p.map(\.x).reduce(0, +) / 4, cy = p.map(\.y).reduce(0, +) / 4
         return [CardPoint(x: cx - w / 2, y: cy - h / 2), CardPoint(x: cx + w / 2, y: cy - h / 2),
                 CardPoint(x: cx + w / 2, y: cy + h / 2), CardPoint(x: cx - w / 2, y: cy + h / 2)]
+    }
+
+    static func paddedItemCrop(bounds: CGRect, canvas: CGSize) -> CGRect {
+        let padding = max(bounds.width, bounds.height) * 0.05
+        return bounds.insetBy(dx: -padding, dy: -padding).integral
+            .intersection(CGRect(origin: .zero, size: canvas))
+    }
+
+    static func bounds(of points: [CardPoint]) -> CGRect {
+        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() else { return .null }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     private struct Line {
@@ -207,6 +221,9 @@ enum CardGeometry {
         let corners = fitted.corners.map { CardPoint(x: $0.x * sx, y: $0.y * sy) }
         guard valid(corners) else { throw CardError.noCard }
         let fillScore = max(0, 1 - abs(1 - fill) / 0.3)
-        return CardDetection(corners: corners, confidence: max(0, min(1, fitted.confidence * 0.75 + fillScore * 0.25)))
+        let minX = bestBoundary.map(\.x).min()!, maxX = bestBoundary.map(\.x).max()!
+        let minY = bestBoundary.map(\.y).min()!, maxY = bestBoundary.map(\.y).max()!
+        let bounds = CGRect(x: minX * sx, y: minY * sy, width: (maxX - minX + 1) * sx, height: (maxY - minY + 1) * sy)
+        return CardDetection(corners: corners, confidence: max(0, min(1, fitted.confidence * 0.75 + fillScore * 0.25)), maskBounds: bounds)
     }
 }
